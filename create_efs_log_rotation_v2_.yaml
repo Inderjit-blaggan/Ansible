@@ -1,0 +1,172 @@
+# Script to Create a virutal enviroment inside linux Server
+
+---
+- hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3.6
+    env: pd
+    parameter_name: EFS
+  tasks:
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        allow_unauthenticated: yes
+
+    - name: Install python3-pip package
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install virtualenv package
+      apt:
+        name: virtualenv
+        state: present
+
+    - name: Install Dependencies
+      apt:
+        name: ['python3-setuptools', 'python3.7', 'python3.7-venv','python3-pip']
+        state: latest
+        update_cache: yes
+
+    - name: Create a virtual environment called ecs
+      command: virtualenv -p python3.7 /home/root/ecs
+      args:
+        creates: /home/root/ecs
+
+    - name: Activate Virtual Enviroment
+      shell: source /home/root/ecs/bin/activate
+      args:
+        executable: /bin/bash
+
+    - name: Install pip
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install setuptools
+      pip:
+        name: setuptools
+        virtualenv: /home/root/ecs
+
+    - name: Install boto3
+      pip:
+        name: boto3
+        state: present
+        virtualenv: /home/root/ecs
+
+    - name: Install requests
+      pip:
+        name: requests
+        state: present
+        virtualenv: /home/root/ecs
+
+
+    - name: Get current date and timezone
+      command: date
+      register: current_date
+    - name: Display current date and timezone
+      debug:
+        msg: "Current date and timezone: {{ current_date.stdout }}"
+
+    - name: Check current timezone using the shell module
+      shell: timedatectl | grep 'Time zone'
+      register: timedatectl_output
+    - name: Extract current timezone from timedatectl output
+      set_fact:
+        current_timezone: "{{ timedatectl_output.stdout.split(':')[1].strip().split(' ')[0] }}"
+
+    - name: Ensure SHELL=/bin/bash is at the top of the root's crontab
+      blockinfile:
+        path: /var/spool/cron/crontabs/root
+        block: |
+          SHELL=/bin/bash
+        marker: "# {mark} ANSIBLE MANAGED BLOCK for shell"
+        insertbefore: BOF  # Insert Before the Start of the File
+        backup: yes  # Creates a backup of the cron file before making changes
+
+    - name: Display current timezone
+      debug:
+        msg: "Current timezone: {{ current_timezone }}"
+
+    - name: Change timezone to CST if currently UTC or Etc/UTC
+      command: timedatectl set-timezone America/Chicago
+      when: current_timezone == "UTC" or current_timezone == "Etc/UTC"
+
+    - name: Get updated date and timezone
+      command: date
+      register: new_date
+    - name: Display updated date and timezone
+      debug:
+        msg: "Updated date and timezone: {{ new_date.stdout }}"
+
+    - name: copy logs archival script
+      copy:
+        src: /home/root/ansible/iblaggan/tomcat-container-logs-archival_to_s3.py
+        dest: /automation/scripts/tomcat-container-logs-archival_to_s3.py
+
+    - name: List all the crons
+      command: crontab -l
+      register: cron_list
+      ignore_errors: true  # To handle the case where there are no cron jobs
+
+    - name: Search for the old efs_to_s3.sh file cron entry
+      shell: echo "{{ cron_list.stdout }}" | grep 'eval /automation/scripts/efs_to_s3.sh'
+      register: grep_result
+      ignore_errors: true  # To handle the case where the grep does not find the entry
+
+    - name: The old efs_to_s3.sh file exists
+      debug:
+        msg: "The specific cron entry exists."
+      when: grep_result.rc == 0
+
+    - name: The old efs_to_s3.sh file exists
+      debug:
+        msg: "The specific cron entry does not exist."
+      when: grep_result.rc != 0
+
+    - name: Replace the efs_to_s3.sh file cron entry if it exists
+      lineinfile:
+        path: /var/spool/cron/crontabs/root  # Adjust 'root' for the correct user
+        regexp: '.*eval /automation/scripts/efs_to_s3.sh.*'  # Updated to match any line containing this
+        line: ''
+        backup: yes  # Creates a backup of the cron file before making changes
+      when: grep_result.rc == 0
+
+    - name: Search for the new tomcat-container-logs-archival_to_s3.py cron entry
+      shell: echo "{{ cron_list.stdout }}" | grep 'python3 /automation/scripts/tomcat-container-logs-archival_to_s3.py'
+      register: new_cron_result
+      ignore_errors: true  # To handle the case where the grep does not find the entry
+
+    - name: The new tomcat-container-logs-archival_to_s3.py cron entry exists
+      debug:
+        msg: "The specific cron entry exists."
+      when: new_cron_result.rc == 0
+
+    - name: The new tomcat-container-logs-archival_to_s3.py cron entry
+      debug:
+        msg: "The specific cron entry does not exist."
+      when: new_cron_result.rc != 0
+
+    - name: Update the new time for tomcat-container-logs-archival_to_s3.py cron entry 
+      lineinfile:
+        path: /var/spool/cron/crontabs/root  # Adjust 'root' for the correct user
+        regexp: '.*python3 /automation/scripts/tomcat-container-logs-archival_to_s3.py.*'  # Updated to match any line containing this
+        line: '00 14 * * * /home/root/ecs/bin/python3 /automation/scripts/tomcat-container-logs-archival_to_s3.py  &>> /var/log/efs_to_s3_move_logs.log '
+        backup: yes  # Creates a backup of the cron file before making changes
+      when: new_cron_result.rc == 0
+
+    - name: Created the new  tomcat-container-logs-archival_to_s3.py cron entry as it doesnt exist already
+      lineinfile:
+        path: /var/spool/cron/crontabs/root  # Adjust 'root' for the correct user
+        line: '00 06 * * * /home/root/ecs/bin/python3 /automation/scripts/tomcat-container-logs-archival_to_s3.py  &>> /var/log/efs_to_s3_move_logs.log'
+        backup: yes  # Creates a backup of the cron file before making changes
+      when: new_cron_result.rc != 0
+
+
+    - name: Restart cron service using systemctl
+      ansible.builtin.systemd:
+        name: cron  # or 'crond' depending on your distribution
+        state: restarted
