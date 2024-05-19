@@ -1,4 +1,4 @@
-# Script to Create a virutal enviroment inside linux Server
+# Script to Create a virutal enviroment inside linux Server and deploy a cron job
 
 ---
 - hosts: all
